@@ -1,0 +1,8 @@
+build/
+build-*/
+*.log
+config.json
+*.user
+*.suo
+*.vcxproj*
+*.sln
