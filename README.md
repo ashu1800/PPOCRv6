@@ -45,6 +45,7 @@ On first start the service creates `config.json`:
   "queue_size": 8,
   "max_request_body_bytes": 16777216,
   "rec_max_width": 960,
+  "rec_direct_max_width": 4096,
   "enable_orientation_retry": true
 }
 ```
@@ -53,6 +54,7 @@ Startup logs include the selected inference mode:
 
 - `Inference mode: GPU(Vulkan)` when ncnn Vulkan initializes successfully.
 - `Inference mode: CPU` plus `CPU fallback reason: ...` when GPU is unavailable.
+- `Model levels` lists `medium`, `small`, and `tiny` with their speed and accuracy trade-offs.
 
 ## API
 
@@ -92,4 +94,4 @@ Response shape:
 }
 ```
 
-`items[].box` is ordered as top-left, top-right, bottom-right, bottom-left. Very long recognition crops are split and merged automatically; `rec_max_width` controls the segment width after the crop is too wide for direct recognition. When `enable_orientation_retry` is true, low-confidence horizontal crops are retried after a 180 degree rotation and the higher-confidence result is returned.
+`items[].box` is ordered as top-left, top-right, bottom-right, bottom-left. Very long recognition crops are split and merged automatically; `rec_direct_max_width` controls when direct recognition gives way to splitting, and `rec_max_width` controls each segment width. When `enable_orientation_retry` is true, low-confidence horizontal crops are retried after a 180 degree rotation and the higher-confidence result is returned only when it clears the confidence and length guards.

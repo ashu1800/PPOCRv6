@@ -75,6 +75,16 @@ std::size_t utf8_overlap_bytes(const std::string& lhs, const std::string& rhs) {
     return 0;
 }
 
+std::size_t utf8_character_count(const std::string& value) {
+    std::size_t count = 0;
+    for (std::size_t i = 0; i < value.size(); ++i) {
+        if (is_utf8_boundary(value, i)) {
+            ++count;
+        }
+    }
+    return count;
+}
+
 } // namespace
 
 CtcDecodeResult ctc_decode(const std::vector<int>& indices, const std::vector<float>& probabilities, const std::vector<std::string>& keys) {
@@ -103,35 +113,34 @@ CtcDecodeResult ctc_decode(const std::vector<int>& indices, const std::vector<fl
 }
 
 std::array<Point, 4> order_box_points(const std::array<Point, 4>& points) {
-    std::array<Point, 4> ordered{};
-    auto min_sum = points[0].x + points[0].y;
-    auto max_sum = min_sum;
-    auto min_diff = points[0].x - points[0].y;
-    auto max_diff = min_diff;
-    ordered[0] = points[0];
-    ordered[1] = points[0];
-    ordered[2] = points[0];
-    ordered[3] = points[0];
-
+    Point center{};
     for (const auto& point : points) {
-        const auto sum = point.x + point.y;
-        const auto diff = point.x - point.y;
-        if (sum < min_sum) {
-            min_sum = sum;
-            ordered[0] = point;
+        center.x += point.x;
+        center.y += point.y;
+    }
+    center.x /= static_cast<float>(points.size());
+    center.y /= static_cast<float>(points.size());
+
+    std::array<Point, 4> ordered = points;
+    std::sort(ordered.begin(), ordered.end(), [&center](const Point& lhs, const Point& rhs) {
+        const float lhs_angle = std::atan2(lhs.y - center.y, lhs.x - center.x);
+        const float rhs_angle = std::atan2(rhs.y - center.y, rhs.x - center.x);
+        return lhs_angle < rhs_angle;
+    });
+
+    auto top_left = ordered.begin();
+    for (auto it = ordered.begin(); it != ordered.end(); ++it) {
+        if (it->y < top_left->y || (std::abs(it->y - top_left->y) <= 0.001F && it->x < top_left->x)) {
+            top_left = it;
         }
-        if (sum > max_sum) {
-            max_sum = sum;
-            ordered[2] = point;
-        }
-        if (diff > max_diff) {
-            max_diff = diff;
-            ordered[1] = point;
-        }
-        if (diff < min_diff) {
-            min_diff = diff;
-            ordered[3] = point;
-        }
+    }
+    std::rotate(ordered.begin(), top_left, ordered.end());
+
+    const Point edge_a{ordered[1].x - ordered[0].x, ordered[1].y - ordered[0].y};
+    const Point edge_b{ordered[2].x - ordered[1].x, ordered[2].y - ordered[1].y};
+    const float cross = edge_a.x * edge_b.y - edge_a.y * edge_b.x;
+    if (cross < 0.0F) {
+        std::swap(ordered[1], ordered[3]);
     }
 
     return ordered;
@@ -179,6 +188,26 @@ std::string merge_text_segments(const std::vector<std::string>& segments) {
         merged += segment.substr(overlap);
     }
     return merged;
+}
+
+bool should_use_orientation_retry_result(
+    const std::string& original_text,
+    float original_confidence,
+    const std::string& rotated_text,
+    float rotated_confidence) {
+    if (rotated_text.empty()) {
+        return false;
+    }
+    if (rotated_confidence < original_confidence + 0.05F) {
+        return false;
+    }
+
+    const auto original_length = utf8_character_count(original_text);
+    if (original_length == 0) {
+        return true;
+    }
+    const auto rotated_length = utf8_character_count(rotated_text);
+    return static_cast<float>(rotated_length) >= static_cast<float>(original_length) * 0.70F;
 }
 
 void sort_boxes_reading_order(std::vector<OcrItem>& items) {

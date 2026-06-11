@@ -17,6 +17,7 @@ struct Config {
     std::size_t queue_size = 8;
     std::size_t max_request_body_bytes = 16 * 1024 * 1024;
     std::size_t rec_max_width = 960;
+    std::size_t rec_direct_max_width = 4096;
     bool enable_orientation_retry = true;
 
     static Config load_or_create(const std::filesystem::path& path);

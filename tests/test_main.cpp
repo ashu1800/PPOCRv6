@@ -5,13 +5,29 @@
 #include "ppocr/request_queue.h"
 #include "ppocr/usage.h"
 
-#include <cassert>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
 namespace {
+
+void check(bool condition, const std::string& message = "check failed") {
+    if (!condition) {
+        throw std::runtime_error(message);
+    }
+}
+
+void run_test(const char* name, void (*test)()) {
+    try {
+        test();
+    } catch (const std::exception& ex) {
+        std::cerr << name << " failed: " << ex.what() << "\n";
+        throw;
+    }
+}
 
 void test_default_config_is_created() {
     const auto dir = std::filesystem::temp_directory_path() / "ppocrv6_config_test";
@@ -21,17 +37,18 @@ void test_default_config_is_created() {
     const auto path = dir / "config.json";
     const auto config = ppocr::Config::load_or_create(path);
 
-    assert(std::filesystem::exists(path));
-    assert(config.model_level == "small");
-    assert(config.listen_host == "0.0.0.0");
-    assert(config.port == 8080);
-    assert(config.prefer_gpu);
-    assert(!config.api_key.empty());
-    assert(config.max_concurrent_requests > 0);
-    assert(config.queue_size >= config.max_concurrent_requests);
-    assert(config.max_request_body_bytes == 16 * 1024 * 1024);
-    assert(config.rec_max_width == 960);
-    assert(config.enable_orientation_retry);
+    check(std::filesystem::exists(path));
+    check(config.model_level == "small");
+    check(config.listen_host == "0.0.0.0");
+    check(config.port == 8080);
+    check(config.prefer_gpu);
+    check(!config.api_key.empty());
+    check(config.max_concurrent_requests > 0);
+    check(config.queue_size >= config.max_concurrent_requests);
+    check(config.max_request_body_bytes == 16 * 1024 * 1024);
+    check(config.rec_max_width == 960);
+    check(config.rec_direct_max_width == 4096);
+    check(config.enable_orientation_retry);
 
     std::filesystem::remove_all(dir);
 }
@@ -53,14 +70,16 @@ void test_config_reads_and_validates_rec_options() {
         "max_concurrent_requests": 2,
         "queue_size": 4,
         "rec_max_width": 1280,
+        "rec_direct_max_width": 6144,
         "enable_orientation_retry": false
     })";
     out.close();
 
     const auto config = ppocr::Config::load_or_create(path);
 
-    assert(config.rec_max_width == 1280);
-    assert(!config.enable_orientation_retry);
+    check(config.rec_max_width == 1280);
+    check(config.rec_direct_max_width == 6144);
+    check(!config.enable_orientation_retry);
     std::filesystem::remove_all(dir);
 }
 
@@ -76,7 +95,7 @@ void test_config_rejects_invalid_rec_max_width() {
         threw = true;
     }
 
-    assert(threw);
+    check(threw);
 }
 
 void test_config_rejects_invalid_model_level() {
@@ -105,16 +124,16 @@ void test_config_rejects_invalid_model_level() {
         threw = true;
     }
 
-    assert(threw);
+    check(threw);
     std::filesystem::remove_all(dir);
 }
 
 void test_base64_decodes_plain_and_data_url() {
     const auto plain = ppocr::decode_base64("SGVsbG8=");
-    assert(std::string(plain.begin(), plain.end()) == "Hello");
+    check(std::string(plain.begin(), plain.end()) == "Hello");
 
     const auto data_url = ppocr::decode_base64("data:image/png;base64,SGVsbG8=");
-    assert(std::string(data_url.begin(), data_url.end()) == "Hello");
+    check(std::string(data_url.begin(), data_url.end()) == "Hello");
 }
 
 void test_base64_rejects_invalid_input() {
@@ -124,25 +143,25 @@ void test_base64_rejects_invalid_input() {
     } catch (const std::exception&) {
         threw = true;
     }
-    assert(threw);
+    check(threw);
 }
 
 void test_request_queue_rejects_when_full() {
     ppocr::RequestQueue<int> queue(1);
-    assert(queue.try_push(1));
-    assert(!queue.try_push(2));
+    check(queue.try_push(1));
+    check(!queue.try_push(2));
 
     int value = 0;
-    assert(queue.wait_pop(value));
-    assert(value == 1);
+    check(queue.wait_pop(value));
+    check(value == 1);
 }
 
 void test_ctc_decode_skips_blank_and_repeated_indices() {
     const std::vector<std::string> keys{"A", "B", "C"};
     const auto decoded = ppocr::ctc_decode({1, 1, 0, 2, 2, 3}, {0.9F, 0.8F, 0.4F, 0.7F, 0.6F, 0.5F}, keys);
 
-    assert(decoded.text == "ABC");
-    assert(decoded.confidence > 0.0F);
+    check(decoded.text == "ABC");
+    check(decoded.confidence > 0.0F);
 }
 
 void test_boxes_sort_in_reading_order() {
@@ -170,9 +189,9 @@ void test_boxes_sort_in_reading_order() {
     std::vector<ppocr::OcrItem> items{bottom, top_right, top_left};
     ppocr::sort_boxes_reading_order(items);
 
-    assert(items[0].text == "top_left");
-    assert(items[1].text == "top_right");
-    assert(items[2].text == "bottom");
+    check(items[0].text == "top_left");
+    check(items[1].text == "top_right");
+    check(items[2].text == "bottom");
 }
 
 void test_boxes_sort_uses_dynamic_line_height_for_large_images() {
@@ -200,9 +219,9 @@ void test_boxes_sort_uses_dynamic_line_height_for_large_images() {
     std::vector<ppocr::OcrItem> items{bottom, top_right, top_left};
     ppocr::sort_boxes_reading_order(items);
 
-    assert(items[0].text == "top_left");
-    assert(items[1].text == "top_right");
-    assert(items[2].text == "bottom");
+    check(items[0].text == "top_left");
+    check(items[1].text == "top_right");
+    check(items[2].text == "bottom");
 }
 
 void test_order_box_points_returns_clockwise_top_left_first() {
@@ -215,10 +234,47 @@ void test_order_box_points_returns_clockwise_top_left_first() {
 
     const auto ordered = ppocr::order_box_points(unordered);
 
-    assert(ordered[0].x == 10.0F && ordered[0].y == 20.0F);
-    assert(ordered[1].x == 110.0F && ordered[1].y == 60.0F);
-    assert(ordered[2].x == 90.0F && ordered[2].y == 110.0F);
-    assert(ordered[3].x == 30.0F && ordered[3].y == 70.0F);
+    check(ordered[0].x == 10.0F && ordered[0].y == 20.0F);
+    check(ordered[1].x == 110.0F && ordered[1].y == 60.0F);
+    check(ordered[2].x == 90.0F && ordered[2].y == 110.0F);
+    check(ordered[3].x == 30.0F && ordered[3].y == 70.0F);
+}
+
+void test_config_rejects_rec_direct_max_width_smaller_than_segment_width() {
+    ppocr::Config config;
+    config.api_key = "abc";
+    config.rec_max_width = 1280;
+    config.rec_direct_max_width = 960;
+
+    bool threw = false;
+    try {
+        config.validate();
+    } catch (const std::exception&) {
+        threw = true;
+    }
+
+    check(threw);
+}
+
+void test_order_box_points_handles_diamond_without_duplicate_points() {
+    const std::array<ppocr::Point, 4> diamond{
+        ppocr::Point{50.0F, 0.0F},
+        ppocr::Point{100.0F, 50.0F},
+        ppocr::Point{50.0F, 100.0F},
+        ppocr::Point{0.0F, 50.0F},
+    };
+
+    const auto ordered = ppocr::order_box_points(diamond);
+
+    for (std::size_t i = 0; i < ordered.size(); ++i) {
+        for (std::size_t j = i + 1; j < ordered.size(); ++j) {
+            check(!(ordered[i].x == ordered[j].x && ordered[i].y == ordered[j].y), "ordered box contains duplicate points");
+        }
+    }
+    check(ordered[0].x == 50.0F && ordered[0].y == 0.0F);
+    check(ordered[1].x == 100.0F && ordered[1].y == 50.0F);
+    check(ordered[2].x == 50.0F && ordered[2].y == 100.0F);
+    check(ordered[3].x == 0.0F && ordered[3].y == 50.0F);
 }
 
 void test_expand_text_box_adds_padding_and_clamps_to_image_bounds() {
@@ -231,13 +287,13 @@ void test_expand_text_box_adds_padding_and_clamps_to_image_bounds() {
 
     const auto expanded = ppocr::expand_text_box(box, 120.0F, 40.0F);
 
-    assert(expanded[0].x == 0.0F);
-    assert(expanded[0].y == 0.0F);
-    assert(expanded[1].x > box[1].x);
-    assert(expanded[2].y > box[2].y);
+    check(expanded[0].x == 0.0F);
+    check(expanded[0].y == 0.0F);
+    check(expanded[1].x > box[1].x);
+    check(expanded[2].y > box[2].y);
     for (const auto& point : expanded) {
-        assert(point.x >= 0.0F && point.x <= 119.0F);
-        assert(point.y >= 0.0F && point.y <= 39.0F);
+        check(point.x >= 0.0F && point.x <= 119.0F);
+        check(point.y >= 0.0F && point.y <= 39.0F);
     }
 }
 
@@ -256,7 +312,14 @@ void test_merge_text_segments_removes_utf8_overlap() {
 
     const auto merged = ppocr::merge_text_segments(segments);
 
-    assert(merged == chongqing + waimai + dingdan + jine + "8" + yuan + jiezh + "02:19");
+    check(merged == chongqing + waimai + dingdan + jine + "8" + yuan + jiezh + "02:19");
+}
+
+void test_orientation_retry_requires_confidence_margin_and_length_guard() {
+    check(!ppocr::should_use_orientation_retry_result("abcdef", 0.70F, "abc", 0.80F));
+    check(!ppocr::should_use_orientation_retry_result("abcdef", 0.70F, "abcdef", 0.74F));
+    check(ppocr::should_use_orientation_retry_result("abcdef", 0.70F, "abcde", 0.76F));
+    check(ppocr::should_use_orientation_retry_result("", 0.0F, "abc", 0.10F));
 }
 
 void test_startup_usage_text_contains_api_contract() {
@@ -267,38 +330,58 @@ void test_startup_usage_text_contains_api_contract() {
 
     const auto usage = ppocr::startup_usage_text(config);
 
-    assert(usage.find("GET /health") != std::string::npos);
-    assert(usage.find("POST /ocr") != std::string::npos);
-    assert(usage.find("X-API-Key: secret") != std::string::npos);
-    assert(usage.find("\"image_base64\"") != std::string::npos);
-    assert(usage.find("\"full_text\"") != std::string::npos);
-    assert(usage.find("\"items\"") != std::string::npos);
-    assert(usage.find("\"confidence\"") != std::string::npos);
-    assert(usage.find("\"box\"") != std::string::npos);
+    check(usage.find("GET /health") != std::string::npos);
+    check(usage.find("POST /ocr") != std::string::npos);
+    check(usage.find("X-API-Key: secret") != std::string::npos);
+    check(usage.find("\"image_base64\"") != std::string::npos);
+    check(usage.find("\"full_text\"") != std::string::npos);
+    check(usage.find("\"items\"") != std::string::npos);
+    check(usage.find("\"confidence\"") != std::string::npos);
+    check(usage.find("\"box\"") != std::string::npos);
+}
+
+void test_startup_usage_text_describes_model_levels() {
+    ppocr::Config config;
+    config.listen_host = "0.0.0.0";
+    config.port = 8080;
+    config.api_key = "secret";
+
+    const auto usage = ppocr::startup_usage_text(config);
+
+    check(usage.find("Model levels:") != std::string::npos);
+    check(usage.find("medium") != std::string::npos);
+    check(usage.find("small") != std::string::npos);
+    check(usage.find("tiny") != std::string::npos);
+    check(usage.find("highest accuracy") != std::string::npos);
+    check(usage.find("fastest") != std::string::npos);
 }
 
 void test_ocr_duration_log_format_contains_elapsed_ms() {
     const auto message = ppocr::format_ocr_duration_log(123);
-    assert(message.find("OCR inference completed in 123 ms") != std::string::npos);
+    check(message.find("OCR inference completed in 123 ms") != std::string::npos);
 }
 
 } // namespace
 
 int main() {
-    test_default_config_is_created();
-    test_config_reads_and_validates_rec_options();
-    test_config_rejects_invalid_rec_max_width();
-    test_config_rejects_invalid_model_level();
-    test_base64_decodes_plain_and_data_url();
-    test_base64_rejects_invalid_input();
-    test_request_queue_rejects_when_full();
-    test_ctc_decode_skips_blank_and_repeated_indices();
-    test_boxes_sort_in_reading_order();
-    test_boxes_sort_uses_dynamic_line_height_for_large_images();
-    test_order_box_points_returns_clockwise_top_left_first();
-    test_expand_text_box_adds_padding_and_clamps_to_image_bounds();
-    test_merge_text_segments_removes_utf8_overlap();
-    test_startup_usage_text_contains_api_contract();
-    test_ocr_duration_log_format_contains_elapsed_ms();
+    run_test("test_default_config_is_created", test_default_config_is_created);
+    run_test("test_config_reads_and_validates_rec_options", test_config_reads_and_validates_rec_options);
+    run_test("test_config_rejects_invalid_rec_max_width", test_config_rejects_invalid_rec_max_width);
+    run_test("test_config_rejects_rec_direct_max_width_smaller_than_segment_width", test_config_rejects_rec_direct_max_width_smaller_than_segment_width);
+    run_test("test_config_rejects_invalid_model_level", test_config_rejects_invalid_model_level);
+    run_test("test_base64_decodes_plain_and_data_url", test_base64_decodes_plain_and_data_url);
+    run_test("test_base64_rejects_invalid_input", test_base64_rejects_invalid_input);
+    run_test("test_request_queue_rejects_when_full", test_request_queue_rejects_when_full);
+    run_test("test_ctc_decode_skips_blank_and_repeated_indices", test_ctc_decode_skips_blank_and_repeated_indices);
+    run_test("test_boxes_sort_in_reading_order", test_boxes_sort_in_reading_order);
+    run_test("test_boxes_sort_uses_dynamic_line_height_for_large_images", test_boxes_sort_uses_dynamic_line_height_for_large_images);
+    run_test("test_order_box_points_returns_clockwise_top_left_first", test_order_box_points_returns_clockwise_top_left_first);
+    run_test("test_order_box_points_handles_diamond_without_duplicate_points", test_order_box_points_handles_diamond_without_duplicate_points);
+    run_test("test_expand_text_box_adds_padding_and_clamps_to_image_bounds", test_expand_text_box_adds_padding_and_clamps_to_image_bounds);
+    run_test("test_merge_text_segments_removes_utf8_overlap", test_merge_text_segments_removes_utf8_overlap);
+    run_test("test_orientation_retry_requires_confidence_margin_and_length_guard", test_orientation_retry_requires_confidence_margin_and_length_guard);
+    run_test("test_startup_usage_text_contains_api_contract", test_startup_usage_text_contains_api_contract);
+    run_test("test_startup_usage_text_describes_model_levels", test_startup_usage_text_describes_model_levels);
+    run_test("test_ocr_duration_log_format_contains_elapsed_ms", test_ocr_duration_log_format_contains_elapsed_ms);
     return 0;
 }

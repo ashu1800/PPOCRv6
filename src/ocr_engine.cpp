@@ -247,6 +247,7 @@ public:
         : model_dir_(model_dir_for(runtime_dir, config.model_level)),
           gpu_device_index_(config.gpu_device),
           rec_max_width_(config.rec_max_width),
+          rec_direct_max_width_(config.rec_direct_max_width),
           enable_orientation_retry_(config.enable_orientation_retry),
           keys_(load_keys(model_dir_ / "keys.txt")) {
         require_file(model_dir_ / "det.ncnn.param");
@@ -439,7 +440,11 @@ private:
             cv::Mat rotated;
             cv::rotate(crop, rotated, cv::ROTATE_180);
             auto rotated_decoded = recognize_text(rotated);
-            if (rotated_decoded.confidence > decoded.confidence) {
+            if (should_use_orientation_retry_result(
+                    decoded.text,
+                    decoded.confidence,
+                    rotated_decoded.text,
+                    rotated_decoded.confidence)) {
                 decoded = std::move(rotated_decoded);
             }
         }
@@ -452,8 +457,7 @@ private:
     }
 
     std::vector<cv::Mat> split_recognition_crop(const cv::Mat& crop) const {
-        constexpr int direct_recognition_max_width = 4096;
-        if (crop.cols <= direct_recognition_max_width) {
+        if (crop.cols <= static_cast<int>(rec_direct_max_width_)) {
             return {crop};
         }
 
@@ -656,6 +660,7 @@ private:
     RuntimeInfo runtime_;
     int gpu_device_index_ = 0;
     std::size_t rec_max_width_ = 960;
+    std::size_t rec_direct_max_width_ = 4096;
     bool enable_orientation_retry_ = true;
     std::vector<std::string> keys_;
     ncnn::Option opt_;

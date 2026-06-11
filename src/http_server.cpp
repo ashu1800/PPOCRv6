@@ -217,10 +217,12 @@ void handle_client(socket_t client, const Config& config, const std::shared_ptr<
     set_socket_timeouts(client);
     std::string response;
     try {
-        const auto request = read_request(client, config.max_request_body_bytes);
+        auto request = read_request(client, config.max_request_body_bytes);
         const auto header_end = request.find("\r\n\r\n");
         const auto header_block = request.substr(0, header_end);
-        const auto body = request.substr(header_end + 4);
+        auto body = request.substr(header_end + 4);
+        request.clear();
+        request.shrink_to_fit();
 
         std::istringstream first_line_stream(header_block);
         std::string method;
@@ -241,15 +243,22 @@ void handle_client(socket_t client, const Config& config, const std::shared_ptr<
             if (header_value(header_block, "X-API-Key") != config.api_key) {
                 response = json_response(401, {{"error", "invalid API key"}});
             } else {
-                const auto json = nlohmann::json::parse(body);
-                auto image_base64 = json.at("image_base64").get<std::string>();
-                auto job = std::make_shared<OcrJob>();
-                job->image_base64 = std::move(image_base64);
-                auto future = job->promise.get_future();
-                if (!queue.try_push(job)) {
-                    response = json_response(429, {{"error", "OCR queue is full"}});
-                } else {
+                std::future<OcrResult> future;
+                bool queued = false;
+                {
+                    const auto json = nlohmann::json::parse(body);
+                    auto image_base64 = json.at("image_base64").get<std::string>();
+                    auto job = std::make_shared<OcrJob>();
+                    job->image_base64 = std::move(image_base64);
+                    future = job->promise.get_future();
+                    queued = queue.try_push(job);
+                }
+                body.clear();
+                body.shrink_to_fit();
+                if (queued) {
                     response = json_response(200, ocr_result_to_json(future.get()));
+                } else {
+                    response = json_response(429, {{"error", "OCR queue is full"}});
                 }
             }
         } else {
@@ -339,7 +348,10 @@ void HttpServer::run() {
             while (queue.wait_pop(job)) {
                 const auto started = std::chrono::steady_clock::now();
                 try {
-                    auto result = engine_->recognize(decode_base64(job->image_base64));
+                    auto image_bytes = decode_base64(job->image_base64);
+                    job->image_base64.clear();
+                    job->image_base64.shrink_to_fit();
+                    auto result = engine_->recognize(image_bytes);
                     const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
                                              std::chrono::steady_clock::now() - started)
                                              .count();
