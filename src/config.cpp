@@ -33,6 +33,7 @@ nlohmann::json to_json(const Config& config) {
         {"gpu_device", config.gpu_device},
         {"max_concurrent_requests", config.max_concurrent_requests},
         {"queue_size", config.queue_size},
+        {"max_request_body_bytes", config.max_request_body_bytes},
     };
 }
 
@@ -46,6 +47,7 @@ Config from_json(const nlohmann::json& json) {
     config.gpu_device = json.value("gpu_device", config.gpu_device);
     config.max_concurrent_requests = json.value("max_concurrent_requests", config.max_concurrent_requests);
     config.queue_size = json.value("queue_size", config.queue_size);
+    config.max_request_body_bytes = json.value("max_request_body_bytes", config.max_request_body_bytes);
     if (config.api_key.empty()) {
         config.api_key = generate_api_key();
     }
@@ -106,6 +108,9 @@ void Config::validate() const {
     }
     if (queue_size < max_concurrent_requests) {
         throw std::invalid_argument("queue_size must be >= max_concurrent_requests");
+    }
+    if (max_request_body_bytes < 1024 * 1024) {
+        throw std::invalid_argument("max_request_body_bytes must be at least 1048576");
     }
 }
 

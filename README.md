@@ -42,7 +42,8 @@ On first start the service creates `config.json`:
   "prefer_gpu": true,
   "gpu_device": 0,
   "max_concurrent_requests": 2,
-  "queue_size": 8
+  "queue_size": 8,
+  "max_request_body_bytes": 16777216
 }
 ```
 

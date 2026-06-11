@@ -28,6 +28,7 @@ void test_default_config_is_created() {
     assert(!config.api_key.empty());
     assert(config.max_concurrent_requests > 0);
     assert(config.queue_size >= config.max_concurrent_requests);
+    assert(config.max_request_body_bytes == 16 * 1024 * 1024);
 
     std::filesystem::remove_all(dir);
 }

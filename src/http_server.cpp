@@ -44,6 +44,11 @@ void close_socket(socket_t socket) {
 }
 #endif
 
+class PayloadTooLargeError final : public std::runtime_error {
+public:
+    explicit PayloadTooLargeError(const std::string& message) : std::runtime_error(message) {}
+};
+
 struct WsaSession {
     WsaSession() {
 #if defined(_WIN32)
@@ -66,6 +71,20 @@ struct OcrJob {
     std::promise<OcrResult> promise;
 };
 
+void set_socket_timeouts(socket_t socket) {
+#if defined(_WIN32)
+    constexpr DWORD timeout_ms = 30000;
+    setsockopt(socket, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout_ms), sizeof(timeout_ms));
+    setsockopt(socket, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&timeout_ms), sizeof(timeout_ms));
+#else
+    timeval timeout{};
+    timeout.tv_sec = 30;
+    timeout.tv_usec = 0;
+    setsockopt(socket, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    setsockopt(socket, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+#endif
+}
+
 std::string reason_phrase(int status) {
     switch (status) {
     case 200:
@@ -78,6 +97,8 @@ std::string reason_phrase(int status) {
         return "Not Found";
     case 405:
         return "Method Not Allowed";
+    case 413:
+        return "Payload Too Large";
     case 429:
         return "Too Many Requests";
     case 503:
@@ -98,7 +119,19 @@ std::string json_response(int status, const nlohmann::json& body) {
     return out.str();
 }
 
-std::string read_request(socket_t client) {
+void send_all(socket_t client, const std::string& response) {
+    std::size_t sent_total = 0;
+    while (sent_total < response.size()) {
+        const auto remaining = response.size() - sent_total;
+        const int sent = send(client, response.data() + sent_total, static_cast<int>(std::min<std::size_t>(remaining, 64 * 1024)), 0);
+        if (sent <= 0) {
+            throw std::runtime_error("failed to send HTTP response");
+        }
+        sent_total += static_cast<std::size_t>(sent);
+    }
+}
+
+std::string read_request(socket_t client, std::size_t max_body_bytes) {
     std::string request;
     char buffer[4096];
     while (request.find("\r\n\r\n") == std::string::npos) {
@@ -126,6 +159,9 @@ std::string read_request(socket_t client) {
             content_length = static_cast<std::size_t>(std::stoul(line.substr(key.size())));
         }
     }
+    if (content_length > max_body_bytes) {
+        throw PayloadTooLargeError("request body exceeds max_request_body_bytes");
+    }
 
     const auto body_start = header_end + 4;
     while (request.size() < body_start + content_length) {
@@ -134,6 +170,9 @@ std::string read_request(socket_t client) {
             throw std::runtime_error("client disconnected while reading body");
         }
         request.append(buffer, buffer + received);
+        if (request.size() > body_start + max_body_bytes) {
+            throw PayloadTooLargeError("request body exceeds max_request_body_bytes");
+        }
     }
     return request;
 }
@@ -173,6 +212,68 @@ nlohmann::json ocr_result_to_json(const OcrResult& result) {
     return {{"full_text", result.full_text}, {"items", items}};
 }
 
+void handle_client(socket_t client, const Config& config, const std::shared_ptr<OcrEngine>& engine, RequestQueue<std::shared_ptr<OcrJob>>& queue) {
+    set_socket_timeouts(client);
+    std::string response;
+    try {
+        const auto request = read_request(client, config.max_request_body_bytes);
+        const auto header_end = request.find("\r\n\r\n");
+        const auto header_block = request.substr(0, header_end);
+        const auto body = request.substr(header_end + 4);
+
+        std::istringstream first_line_stream(header_block);
+        std::string method;
+        std::string path;
+        first_line_stream >> method >> path;
+
+        if (method == "GET" && path == "/health") {
+            const auto& runtime = engine->runtime_info();
+            response = json_response(200, {
+                {"status", "ok"},
+                {"model_level", config.model_level},
+                {"inference_mode", runtime.inference_mode},
+                {"gpu_enabled", runtime.gpu_enabled},
+                {"gpu_device_name", runtime.gpu_device_name},
+                {"fallback_reason", runtime.fallback_reason},
+            });
+        } else if (method == "POST" && path == "/ocr") {
+            if (header_value(header_block, "X-API-Key") != config.api_key) {
+                response = json_response(401, {{"error", "invalid API key"}});
+            } else {
+                const auto json = nlohmann::json::parse(body);
+                const auto image_base64 = json.at("image_base64").get<std::string>();
+                auto job = std::make_shared<OcrJob>();
+                job->bytes = decode_base64(image_base64);
+                auto future = job->promise.get_future();
+                if (!queue.try_push(job)) {
+                    response = json_response(429, {{"error", "OCR queue is full"}});
+                } else {
+                    response = json_response(200, ocr_result_to_json(future.get()));
+                }
+            }
+        } else {
+            response = json_response(404, {{"error", "not found"}});
+        }
+    } catch (const PayloadTooLargeError& ex) {
+        response = json_response(413, {{"error", ex.what()}});
+    } catch (const nlohmann::json::exception& ex) {
+        response = json_response(400, {{"error", ex.what()}});
+    } catch (const std::invalid_argument& ex) {
+        response = json_response(400, {{"error", ex.what()}});
+    } catch (const std::runtime_error& ex) {
+        response = json_response(503, {{"error", ex.what()}});
+    } catch (const std::exception& ex) {
+        response = json_response(500, {{"error", ex.what()}});
+    }
+
+    try {
+        send_all(client, response);
+    } catch (const std::exception& ex) {
+        log::warn(ex.what());
+    }
+    close_socket(client);
+}
+
 } // namespace
 
 HttpServer::HttpServer(Config config, std::shared_ptr<OcrEngine> engine)
@@ -189,29 +290,9 @@ void HttpServer::stop() {
 void HttpServer::run() {
     WsaSession wsa;
     RequestQueue<std::shared_ptr<OcrJob>> queue(config_.queue_size);
+    RequestQueue<socket_t> client_queue(std::max<std::size_t>(config_.queue_size, config_.max_concurrent_requests * 2));
     std::vector<std::thread> workers;
-    for (std::size_t i = 0; i < config_.max_concurrent_requests; ++i) {
-        workers.emplace_back([this, &queue] {
-            std::shared_ptr<OcrJob> job;
-            while (queue.wait_pop(job)) {
-                const auto started = std::chrono::steady_clock::now();
-                try {
-                    auto result = engine_->recognize(job->bytes);
-                    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                             std::chrono::steady_clock::now() - started)
-                                             .count();
-                    log::info(format_ocr_duration_log(elapsed));
-                    job->promise.set_value(std::move(result));
-                } catch (...) {
-                    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                             std::chrono::steady_clock::now() - started)
-                                             .count();
-                    log::warn("OCR inference failed after " + std::to_string(elapsed) + " ms");
-                    job->promise.set_exception(std::current_exception());
-                }
-            }
-        });
-    }
+    std::vector<std::thread> client_workers;
 
     socket_t server = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (server == invalid_socket_value) {
@@ -251,6 +332,39 @@ void HttpServer::run() {
 
     log::info("HTTP server listening on " + config_.listen_host + ":" + std::to_string(config_.port));
 
+    for (std::size_t i = 0; i < config_.max_concurrent_requests; ++i) {
+        workers.emplace_back([this, &queue] {
+            std::shared_ptr<OcrJob> job;
+            while (queue.wait_pop(job)) {
+                const auto started = std::chrono::steady_clock::now();
+                try {
+                    auto result = engine_->recognize(job->bytes);
+                    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                             std::chrono::steady_clock::now() - started)
+                                             .count();
+                    log::info(format_ocr_duration_log(elapsed));
+                    job->promise.set_value(std::move(result));
+                } catch (...) {
+                    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                             std::chrono::steady_clock::now() - started)
+                                             .count();
+                    log::warn("OCR inference failed after " + std::to_string(elapsed) + " ms");
+                    job->promise.set_exception(std::current_exception());
+                }
+            }
+        });
+    }
+
+    const std::size_t client_worker_count = std::max<std::size_t>(2, config_.max_concurrent_requests);
+    for (std::size_t i = 0; i < client_worker_count; ++i) {
+        client_workers.emplace_back([this, &queue, &client_queue] {
+            socket_t client = invalid_socket_value;
+            while (client_queue.wait_pop(client)) {
+                handle_client(client, config_, engine_, queue);
+            }
+        });
+    }
+
     while (!stopping_) {
         socket_t client = accept(server, nullptr, nullptr);
         if (client == invalid_socket_value) {
@@ -260,62 +374,24 @@ void HttpServer::run() {
             continue;
         }
 
-        std::thread([this, client, &queue] {
-            std::string response;
+        set_socket_timeouts(client);
+        if (!client_queue.try_push(client)) {
             try {
-                const auto request = read_request(client);
-                const auto header_end = request.find("\r\n\r\n");
-                const auto header_block = request.substr(0, header_end);
-                const auto body = request.substr(header_end + 4);
-
-                std::istringstream first_line_stream(header_block);
-                std::string method;
-                std::string path;
-                first_line_stream >> method >> path;
-
-                if (method == "GET" && path == "/health") {
-                    const auto& runtime = engine_->runtime_info();
-                    response = json_response(200, {
-                        {"status", "ok"},
-                        {"model_level", config_.model_level},
-                        {"inference_mode", runtime.inference_mode},
-                        {"gpu_enabled", runtime.gpu_enabled},
-                        {"gpu_device_name", runtime.gpu_device_name},
-                        {"fallback_reason", runtime.fallback_reason},
-                    });
-                } else if (method == "POST" && path == "/ocr") {
-                    if (header_value(header_block, "X-API-Key") != config_.api_key) {
-                        response = json_response(401, {{"error", "invalid API key"}});
-                    } else {
-                        const auto json = nlohmann::json::parse(body);
-                        const auto image_base64 = json.at("image_base64").get<std::string>();
-                        auto job = std::make_shared<OcrJob>();
-                        job->bytes = decode_base64(image_base64);
-                        auto future = job->promise.get_future();
-                        if (!queue.try_push(job)) {
-                            response = json_response(429, {{"error", "OCR queue is full"}});
-                        } else {
-                            response = json_response(200, ocr_result_to_json(future.get()));
-                        }
-                    }
-                } else {
-                    response = json_response(404, {{"error", "not found"}});
-                }
-            } catch (const nlohmann::json::exception& ex) {
-                response = json_response(400, {{"error", ex.what()}});
-            } catch (const std::invalid_argument& ex) {
-                response = json_response(400, {{"error", ex.what()}});
-            } catch (const std::runtime_error& ex) {
-                response = json_response(503, {{"error", ex.what()}});
+                send_all(client, json_response(429, {{"error", "HTTP connection queue is full"}}));
             } catch (const std::exception& ex) {
-                response = json_response(500, {{"error", ex.what()}});
+                log::warn(ex.what());
             }
-            send(client, response.data(), static_cast<int>(response.size()), 0);
             close_socket(client);
-        }).detach();
+        }
     }
 
     close_socket(server);
+    client_queue.close();
+    for (auto& client_worker : client_workers) {
+        if (client_worker.joinable()) {
+            client_worker.join();
+        }
+    }
     queue.close();
     for (auto& worker : workers) {
         if (worker.joinable()) {

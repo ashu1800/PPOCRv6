@@ -15,6 +15,7 @@ struct Config {
     int gpu_device = 0;
     std::size_t max_concurrent_requests = 2;
     std::size_t queue_size = 8;
+    std::size_t max_request_body_bytes = 16 * 1024 * 1024;
 
     static Config load_or_create(const std::filesystem::path& path);
     void validate() const;
