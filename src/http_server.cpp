@@ -1,6 +1,7 @@
 #include "ppocr/http_server.h"
 
 #include "ppocr/base64.h"
+#include "ppocr/http_request.h"
 #include "ppocr/logger.h"
 #include "ppocr/metrics.h"
 #include "ppocr/request_queue.h"
@@ -132,7 +133,12 @@ void send_all(socket_t client, const std::string& response) {
     }
 }
 
-std::string read_request(socket_t client, std::size_t max_body_bytes) {
+struct RawHttpRequestHead {
+    HttpRequestHead head;
+    std::string initial_body;
+};
+
+RawHttpRequestHead read_request_head(socket_t client, std::size_t max_body_bytes) {
     std::string request;
     char buffer[4096];
     while (request.find("\r\n\r\n") == std::string::npos) {
@@ -147,54 +153,26 @@ std::string read_request(socket_t client, std::size_t max_body_bytes) {
     }
 
     const auto header_end = request.find("\r\n\r\n");
-    const auto headers = request.substr(0, header_end);
-    std::size_t content_length = 0;
-    std::istringstream stream(headers);
-    std::string line;
-    while (std::getline(stream, line)) {
-        if (!line.empty() && line.back() == '\r') {
-            line.pop_back();
-        }
-        const std::string key = "Content-Length:";
-        if (line.size() >= key.size() && _strnicmp(line.c_str(), key.c_str(), key.size()) == 0) {
-            content_length = static_cast<std::size_t>(std::stoul(line.substr(key.size())));
-        }
-    }
-    if (content_length > max_body_bytes) {
-        throw PayloadTooLargeError("request body exceeds max_request_body_bytes");
-    }
+    auto head = parse_http_request_head(std::string_view(request).substr(0, header_end), max_body_bytes);
+    return {std::move(head), request.substr(header_end + 4)};
+}
 
-    const auto body_start = header_end + 4;
-    while (request.size() < body_start + content_length) {
+std::string read_request_body(socket_t client, std::string body, std::size_t content_length, std::size_t max_body_bytes) {
+    char buffer[4096];
+    while (body.size() < content_length) {
         const int received = recv(client, buffer, sizeof(buffer), 0);
         if (received <= 0) {
             throw std::runtime_error("client disconnected while reading body");
         }
-        request.append(buffer, buffer + received);
-        if (request.size() > body_start + max_body_bytes) {
+        body.append(buffer, buffer + received);
+        if (body.size() > max_body_bytes) {
             throw PayloadTooLargeError("request body exceeds max_request_body_bytes");
         }
     }
-    return request;
-}
-
-std::string header_value(const std::string& headers, const std::string& name) {
-    std::istringstream stream(headers);
-    std::string line;
-    const auto wanted = name + ":";
-    while (std::getline(stream, line)) {
-        if (!line.empty() && line.back() == '\r') {
-            line.pop_back();
-        }
-        if (line.size() >= wanted.size() && _strnicmp(line.c_str(), wanted.c_str(), wanted.size()) == 0) {
-            auto value = line.substr(wanted.size());
-            while (!value.empty() && value.front() == ' ') {
-                value.erase(value.begin());
-            }
-            return value;
-        }
+    if (body.size() > content_length) {
+        body.resize(content_length);
     }
-    return {};
+    return body;
 }
 
 nlohmann::json ocr_result_to_json(const OcrResult& result) {
@@ -217,19 +195,9 @@ void handle_client(socket_t client, const Config& config, const std::shared_ptr<
     set_socket_timeouts(client);
     std::string response;
     try {
-        auto request = read_request(client, config.max_request_body_bytes);
-        const auto header_end = request.find("\r\n\r\n");
-        const auto header_block = request.substr(0, header_end);
-        auto body = request.substr(header_end + 4);
-        request.clear();
-        request.shrink_to_fit();
+        auto request = read_request_head(client, config.max_request_body_bytes);
 
-        std::istringstream first_line_stream(header_block);
-        std::string method;
-        std::string path;
-        first_line_stream >> method >> path;
-
-        if (method == "GET" && path == "/health") {
+        if (request.head.method == "GET" && request.head.path == "/health") {
             const auto& runtime = engine->runtime_info();
             response = json_response(200, {
                 {"status", "ok"},
@@ -239,10 +207,15 @@ void handle_client(socket_t client, const Config& config, const std::shared_ptr<
                 {"gpu_device_name", runtime.gpu_device_name},
                 {"fallback_reason", runtime.fallback_reason},
             });
-        } else if (method == "POST" && path == "/ocr") {
-            if (header_value(header_block, "X-API-Key") != config.api_key) {
+        } else if (request.head.method == "POST" && request.head.path == "/ocr") {
+            if (!should_read_http_body(request.head, config)) {
                 response = json_response(401, {{"error", "invalid API key"}});
             } else {
+                auto body = read_request_body(
+                    client,
+                    std::move(request.initial_body),
+                    request.head.content_length,
+                    config.max_request_body_bytes);
                 std::future<OcrResult> future;
                 bool queued = false;
                 {
@@ -265,6 +238,8 @@ void handle_client(socket_t client, const Config& config, const std::shared_ptr<
             response = json_response(404, {{"error", "not found"}});
         }
     } catch (const PayloadTooLargeError& ex) {
+        response = json_response(413, {{"error", ex.what()}});
+    } catch (const std::length_error& ex) {
         response = json_response(413, {{"error", ex.what()}});
     } catch (const nlohmann::json::exception& ex) {
         response = json_response(400, {{"error", ex.what()}});
@@ -379,6 +354,27 @@ void HttpServer::run() {
     }
 
     while (!stopping_) {
+        fd_set read_set;
+        FD_ZERO(&read_set);
+        FD_SET(server, &read_set);
+        timeval timeout{};
+        timeout.tv_sec = 0;
+        timeout.tv_usec = 200000;
+#if defined(_WIN32)
+        const int ready = select(0, &read_set, nullptr, nullptr, &timeout);
+#else
+        const int ready = select(server + 1, &read_set, nullptr, nullptr, &timeout);
+#endif
+        if (ready == 0) {
+            continue;
+        }
+        if (ready < 0) {
+            if (!stopping_) {
+                log::warn("select failed");
+            }
+            continue;
+        }
+
         socket_t client = accept(server, nullptr, nullptr);
         if (client == invalid_socket_value) {
             if (!stopping_) {

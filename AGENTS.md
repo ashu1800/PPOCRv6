@@ -8,15 +8,18 @@ PPOCRv6 是一个 C++ 无 UI OCR 服务项目，目标产物为单个 `PPOCRv6.e
 
 - `CMakeLists.txt`：C++17 构建入口，配置 ncnn、OpenCV、nlohmann/json 和测试目标。
 - `include/ppocr`：公共头文件，包含配置、日志、HTTP 服务、OCR engine、base64 和队列接口。
-- `src/config.cpp`：首次启动生成 `config.json`，并校验模型级别、端口、API Key、并发、识别分段宽度、直识别宽度和方向重试参数。
-- `src/http_server.cpp`：HTTP 服务实现，提供 `GET /health` 和 `POST /ocr`，使用 API Key 鉴权与有界队列控制并发，并在 OCR worker 内解码 base64。
-- `src/ocr_engine.cpp`：OCR runtime 初始化、模型文件校验、ncnn GPU 优先和 CPU fallback、四点透视裁剪、长文本切分和低置信度 180 度重试逻辑。
+- `src/config.cpp`：首次启动生成 `config.json`，并校验模型级别、端口、API Key、并发、队列、请求体、ncnn 每请求线程数、识别分段宽度、直识别宽度和方向重试参数。
+- `src/http_request.cpp`：HTTP 请求头解析、Header 值提取和是否需要读取请求体的鉴权前置策略。
+- `src/http_server.cpp`：HTTP 服务实现，提供 `GET /health` 和 `POST /ocr`，先解析请求头并完成 API Key 鉴权，再按需读取 body，使用有界队列控制并发，并在 OCR worker 内解码 base64。
+- `src/ocr_engine.cpp`：OCR runtime 初始化、模型文件校验、ncnn GPU 优先和 CPU fallback、独立 ncnn 每请求线程数、四点透视裁剪、长文本切分和低置信度 180 度重试逻辑。
 - `src/ocr_postprocess.cpp`：CTC 解码、稳定文本框四点排序、动态阅读顺序排序、UTF-8 安全文本段合并和方向重试选择等 OCR 后处理工具。
 - `tests/test_main.cpp`：基础单元测试，覆盖配置、base64、队列和后处理。
 - `models`：外置 PPOCR ncnn 模型目录，每个级别包含 `det.ncnn.param/bin`、`rec.ncnn.param/bin`、`keys.txt`。
 
 ## 变更历史
 
+[2026-06-11] HTTP服务 - 改为先解析 Header 并完成鉴权后再读取 OCR body，同时让 stop 可轮询退出 accept。
+[2026-06-11] 配置 - 新增 `ncnn_threads_per_request` 并为并发、队列和请求体大小增加上限校验。
 [2026-06-11] 日志 - 启动后输出 `models` 支持级别说明，列出 medium/small/tiny 的速度和精度取舍。
 [2026-06-11] 测试 - 将单元测试从 `assert` 迁移为 Release 下生效的异常式 `check`。
 [2026-06-11] OCR识别 - 加固四点排序退化场景、方向重试选择保护和超长识别宽度配置语义。

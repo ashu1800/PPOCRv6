@@ -1,5 +1,6 @@
 #include "ppocr/base64.h"
 #include "ppocr/config.h"
+#include "ppocr/http_request.h"
 #include "ppocr/metrics.h"
 #include "ppocr/ocr_postprocess.h"
 #include "ppocr/request_queue.h"
@@ -45,6 +46,7 @@ void test_default_config_is_created() {
     check(!config.api_key.empty());
     check(config.max_concurrent_requests > 0);
     check(config.queue_size >= config.max_concurrent_requests);
+    check(config.ncnn_threads_per_request == 1);
     check(config.max_request_body_bytes == 16 * 1024 * 1024);
     check(config.rec_max_width == 960);
     check(config.rec_direct_max_width == 4096);
@@ -69,6 +71,7 @@ void test_config_reads_and_validates_rec_options() {
         "gpu_device": 0,
         "max_concurrent_requests": 2,
         "queue_size": 4,
+        "ncnn_threads_per_request": 3,
         "rec_max_width": 1280,
         "rec_direct_max_width": 6144,
         "enable_orientation_retry": false
@@ -79,6 +82,7 @@ void test_config_reads_and_validates_rec_options() {
 
     check(config.rec_max_width == 1280);
     check(config.rec_direct_max_width == 6144);
+    check(config.ncnn_threads_per_request == 3);
     check(!config.enable_orientation_retry);
     std::filesystem::remove_all(dir);
 }
@@ -256,6 +260,74 @@ void test_config_rejects_rec_direct_max_width_smaller_than_segment_width() {
     check(threw);
 }
 
+void test_config_rejects_excessive_resource_limits() {
+    ppocr::Config config;
+    config.api_key = "abc";
+    config.max_concurrent_requests = 65;
+    config.queue_size = 65;
+
+    bool threw = false;
+    try {
+        config.validate();
+    } catch (const std::exception&) {
+        threw = true;
+    }
+    check(threw);
+
+    config.max_concurrent_requests = 2;
+    config.queue_size = 2049;
+    threw = false;
+    try {
+        config.validate();
+    } catch (const std::exception&) {
+        threw = true;
+    }
+    check(threw);
+
+    config.queue_size = 8;
+    config.max_request_body_bytes = 65 * 1024 * 1024;
+    threw = false;
+    try {
+        config.validate();
+    } catch (const std::exception&) {
+        threw = true;
+    }
+    check(threw);
+}
+
+void test_config_rejects_invalid_ncnn_threads_per_request() {
+    ppocr::Config config;
+    config.api_key = "abc";
+    config.ncnn_threads_per_request = 0;
+
+    bool threw = false;
+    try {
+        config.validate();
+    } catch (const std::exception&) {
+        threw = true;
+    }
+    check(threw);
+}
+
+void test_http_body_policy_requires_auth_before_body_read() {
+    ppocr::Config config;
+    config.api_key = "secret";
+
+    const auto health = ppocr::parse_http_request_head("GET /health HTTP/1.1\r\nContent-Length: 100\r\n", config.max_request_body_bytes);
+    check(!ppocr::should_read_http_body(health, config));
+
+    const auto unauthorized = ppocr::parse_http_request_head("POST /ocr HTTP/1.1\r\nContent-Length: 100\r\nX-API-Key: wrong\r\n", config.max_request_body_bytes);
+    check(!ppocr::should_read_http_body(unauthorized, config));
+
+    const auto authorized = ppocr::parse_http_request_head("POST /ocr HTTP/1.1\r\nContent-Length: 100\r\nX-API-Key: secret\r\n", config.max_request_body_bytes);
+    check(ppocr::should_read_http_body(authorized, config));
+}
+
+void test_http_header_value_trims_optional_whitespace() {
+    const auto value = ppocr::http_header_value("X-API-Key:\t secret \t\r\n", "X-API-Key");
+    check(value == "secret");
+}
+
 void test_order_box_points_handles_diamond_without_duplicate_points() {
     const std::array<ppocr::Point, 4> diamond{
         ppocr::Point{50.0F, 0.0F},
@@ -368,10 +440,14 @@ int main() {
     run_test("test_config_reads_and_validates_rec_options", test_config_reads_and_validates_rec_options);
     run_test("test_config_rejects_invalid_rec_max_width", test_config_rejects_invalid_rec_max_width);
     run_test("test_config_rejects_rec_direct_max_width_smaller_than_segment_width", test_config_rejects_rec_direct_max_width_smaller_than_segment_width);
+    run_test("test_config_rejects_excessive_resource_limits", test_config_rejects_excessive_resource_limits);
+    run_test("test_config_rejects_invalid_ncnn_threads_per_request", test_config_rejects_invalid_ncnn_threads_per_request);
     run_test("test_config_rejects_invalid_model_level", test_config_rejects_invalid_model_level);
     run_test("test_base64_decodes_plain_and_data_url", test_base64_decodes_plain_and_data_url);
     run_test("test_base64_rejects_invalid_input", test_base64_rejects_invalid_input);
     run_test("test_request_queue_rejects_when_full", test_request_queue_rejects_when_full);
+    run_test("test_http_body_policy_requires_auth_before_body_read", test_http_body_policy_requires_auth_before_body_read);
+    run_test("test_http_header_value_trims_optional_whitespace", test_http_header_value_trims_optional_whitespace);
     run_test("test_ctc_decode_skips_blank_and_repeated_indices", test_ctc_decode_skips_blank_and_repeated_indices);
     run_test("test_boxes_sort_in_reading_order", test_boxes_sort_in_reading_order);
     run_test("test_boxes_sort_uses_dynamic_line_height_for_large_images", test_boxes_sort_uses_dynamic_line_height_for_large_images);

@@ -12,6 +12,7 @@ option(PPOCR_BUILD_TESTS "Build unit tests" ON)
 add_library(ppocr_core
     src/base64.cpp
     src/config.cpp
+    src/http_request.cpp
     src/http_server.cpp
     src/logger.cpp
     src/metrics.cpp

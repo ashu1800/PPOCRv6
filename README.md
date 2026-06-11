@@ -43,6 +43,7 @@ On first start the service creates `config.json`:
   "gpu_device": 0,
   "max_concurrent_requests": 2,
   "queue_size": 8,
+  "ncnn_threads_per_request": 1,
   "max_request_body_bytes": 16777216,
   "rec_max_width": 960,
   "rec_direct_max_width": 4096,
@@ -95,3 +96,5 @@ Response shape:
 ```
 
 `items[].box` is ordered as top-left, top-right, bottom-right, bottom-left. Very long recognition crops are split and merged automatically; `rec_direct_max_width` controls when direct recognition gives way to splitting, and `rec_max_width` controls each segment width. When `enable_orientation_retry` is true, low-confidence horizontal crops are retried after a 180 degree rotation and the higher-confidence result is returned only when it clears the confidence and length guards.
+
+`max_concurrent_requests`, `queue_size`, and `max_request_body_bytes` are capped during config validation to prevent accidental resource exhaustion. `ncnn_threads_per_request` controls ncnn's per-inference CPU thread count independently from HTTP request concurrency.

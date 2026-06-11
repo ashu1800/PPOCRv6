@@ -577,7 +577,7 @@ private:
 #endif
 
     void initialize_runtime(const Config& config) {
-        opt_.num_threads = static_cast<int>(std::max<std::size_t>(1, config.max_concurrent_requests));
+        opt_.num_threads = static_cast<int>(config.ncnn_threads_per_request);
         opt_.use_fp16_packed = false;
         opt_.use_fp16_storage = false;
         opt_.use_fp16_arithmetic = false;

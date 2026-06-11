@@ -33,6 +33,7 @@ nlohmann::json to_json(const Config& config) {
         {"gpu_device", config.gpu_device},
         {"max_concurrent_requests", config.max_concurrent_requests},
         {"queue_size", config.queue_size},
+        {"ncnn_threads_per_request", config.ncnn_threads_per_request},
         {"max_request_body_bytes", config.max_request_body_bytes},
         {"rec_max_width", config.rec_max_width},
         {"rec_direct_max_width", config.rec_direct_max_width},
@@ -50,6 +51,7 @@ Config from_json(const nlohmann::json& json) {
     config.gpu_device = json.value("gpu_device", config.gpu_device);
     config.max_concurrent_requests = json.value("max_concurrent_requests", config.max_concurrent_requests);
     config.queue_size = json.value("queue_size", config.queue_size);
+    config.ncnn_threads_per_request = json.value("ncnn_threads_per_request", config.ncnn_threads_per_request);
     config.max_request_body_bytes = json.value("max_request_body_bytes", config.max_request_body_bytes);
     config.rec_max_width = json.value("rec_max_width", config.rec_max_width);
     config.rec_direct_max_width = json.value("rec_direct_max_width", config.rec_direct_max_width);
@@ -112,11 +114,23 @@ void Config::validate() const {
     if (max_concurrent_requests == 0) {
         throw std::invalid_argument("max_concurrent_requests must be > 0");
     }
+    if (max_concurrent_requests > 64) {
+        throw std::invalid_argument("max_concurrent_requests must be <= 64");
+    }
     if (queue_size < max_concurrent_requests) {
         throw std::invalid_argument("queue_size must be >= max_concurrent_requests");
     }
+    if (queue_size > 2048) {
+        throw std::invalid_argument("queue_size must be <= 2048");
+    }
+    if (ncnn_threads_per_request == 0 || ncnn_threads_per_request > 64) {
+        throw std::invalid_argument("ncnn_threads_per_request must be in range 1..64");
+    }
     if (max_request_body_bytes < 1024 * 1024) {
         throw std::invalid_argument("max_request_body_bytes must be at least 1048576");
+    }
+    if (max_request_body_bytes > 64 * 1024 * 1024) {
+        throw std::invalid_argument("max_request_body_bytes must be <= 67108864");
     }
     if (rec_max_width < 320 || rec_max_width > 4096) {
         throw std::invalid_argument("rec_max_width must be in range 320..4096");
