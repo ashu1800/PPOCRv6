@@ -14,6 +14,7 @@ add_library(ppocr_core
     src/config.cpp
     src/http_server.cpp
     src/logger.cpp
+    src/metrics.cpp
     src/ocr_engine.cpp
     src/ocr_postprocess.cpp
     src/request_queue.cpp

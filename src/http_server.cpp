@@ -2,11 +2,13 @@
 
 #include "ppocr/base64.h"
 #include "ppocr/logger.h"
+#include "ppocr/metrics.h"
 #include "ppocr/request_queue.h"
 
 #include <nlohmann/json.hpp>
 
 #include <atomic>
+#include <chrono>
 #include <cstring>
 #include <future>
 #include <mutex>
@@ -192,9 +194,19 @@ void HttpServer::run() {
         workers.emplace_back([this, &queue] {
             std::shared_ptr<OcrJob> job;
             while (queue.wait_pop(job)) {
+                const auto started = std::chrono::steady_clock::now();
                 try {
-                    job->promise.set_value(engine_->recognize(job->bytes));
+                    auto result = engine_->recognize(job->bytes);
+                    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                             std::chrono::steady_clock::now() - started)
+                                             .count();
+                    log::info(format_ocr_duration_log(elapsed));
+                    job->promise.set_value(std::move(result));
                 } catch (...) {
+                    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                             std::chrono::steady_clock::now() - started)
+                                             .count();
+                    log::warn("OCR inference failed after " + std::to_string(elapsed) + " ms");
                     job->promise.set_exception(std::current_exception());
                 }
             }

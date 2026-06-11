@@ -1,5 +1,6 @@
 #include "ppocr/base64.h"
 #include "ppocr/config.h"
+#include "ppocr/metrics.h"
 #include "ppocr/ocr_postprocess.h"
 #include "ppocr/request_queue.h"
 #include "ppocr/usage.h"
@@ -145,6 +146,11 @@ void test_startup_usage_text_contains_api_contract() {
     assert(usage.find("\"box\"") != std::string::npos);
 }
 
+void test_ocr_duration_log_format_contains_elapsed_ms() {
+    const auto message = ppocr::format_ocr_duration_log(123);
+    assert(message.find("OCR inference completed in 123 ms") != std::string::npos);
+}
+
 } // namespace
 
 int main() {
@@ -156,5 +162,6 @@ int main() {
     test_ctc_decode_skips_blank_and_repeated_indices();
     test_boxes_sort_in_reading_order();
     test_startup_usage_text_contains_api_contract();
+    test_ocr_duration_log_format_contains_elapsed_ms();
     return 0;
 }
