@@ -1,7 +1,9 @@
 build/
 build-*/
+third_party/
 *.log
 config.json
+test_ocr.png
 *.user
 *.suo
 *.vcxproj*

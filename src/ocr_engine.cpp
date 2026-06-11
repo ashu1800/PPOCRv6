@@ -187,7 +187,7 @@ private:
 class NcnnOcrEngine final : public OcrEngine {
 public:
     NcnnOcrEngine(const Config& config, const std::filesystem::path& runtime_dir)
-        : model_dir_(model_dir_for(runtime_dir, config.model_level)), keys_(load_keys(model_dir_ / "keys.txt")) {
+        : model_dir_(model_dir_for(runtime_dir, config.model_level)), gpu_device_index_(config.gpu_device), keys_(load_keys(model_dir_ / "keys.txt")) {
         require_file(model_dir_ / "det.ncnn.param");
         require_file(model_dir_ / "det.ncnn.bin");
         require_file(model_dir_ / "rec.ncnn.param");
@@ -282,9 +282,6 @@ private:
         padded.substract_mean_normalize(mean_vals, norm_vals);
 
         auto extractor = det_net_.create_extractor();
-#if NCNN_VULKAN
-        extractor.set_vulkan_compute(runtime_.gpu_enabled);
-#endif
         extractor.input("in0", padded);
 
         ncnn::Mat output;
@@ -371,9 +368,6 @@ private:
         input.substract_mean_normalize(mean_vals, norm_vals);
 
         auto extractor = rec_net_.create_extractor();
-#if NCNN_VULKAN
-        extractor.set_vulkan_compute(runtime_.gpu_enabled);
-#endif
         extractor.input("in0", input);
 
         ncnn::Mat output;
@@ -452,38 +446,46 @@ private:
     void load_models() {
         det_net_.opt = opt_;
         rec_net_.opt = opt_;
+#if NCNN_VULKAN
+        if (runtime_.gpu_enabled) {
+            det_net_.set_vulkan_device(gpu_device_index_);
+            rec_net_.set_vulkan_device(gpu_device_index_);
+        }
+#endif
 
-        if (det_net_.load_param((model_dir_ / "det.ncnn.param").string().c_str()) != 0 ||
-            det_net_.load_model((model_dir_ / "det.ncnn.bin").string().c_str()) != 0) {
-            throw std::runtime_error("failed to load det ncnn model");
+        if (try_load_models()) {
+            return;
         }
 
-        if (rec_net_.load_param((model_dir_ / "rec.ncnn.param").string().c_str()) != 0 ||
-            rec_net_.load_model((model_dir_ / "rec.ncnn.bin").string().c_str()) != 0) {
-            if (runtime_.gpu_enabled) {
-                log::warn("GPU model load failed; retrying model load with CPU backend.");
-                runtime_.gpu_enabled = false;
-                runtime_.inference_mode = "CPU";
-                runtime_.fallback_reason = "model load failed with Vulkan backend";
-                opt_.use_vulkan_compute = false;
-                det_net_.clear();
-                rec_net_.clear();
-                det_net_.opt = opt_;
-                rec_net_.opt = opt_;
-                if (det_net_.load_param((model_dir_ / "det.ncnn.param").string().c_str()) != 0 ||
-                    det_net_.load_model((model_dir_ / "det.ncnn.bin").string().c_str()) != 0 ||
-                    rec_net_.load_param((model_dir_ / "rec.ncnn.param").string().c_str()) != 0 ||
-                    rec_net_.load_model((model_dir_ / "rec.ncnn.bin").string().c_str()) != 0) {
-                    throw std::runtime_error("failed to load ncnn models after CPU fallback");
-                }
-                return;
-            }
-            throw std::runtime_error("failed to load rec ncnn model");
+        if (!runtime_.gpu_enabled) {
+            throw std::runtime_error("failed to load ncnn models");
         }
+
+        log::warn("GPU model load failed; retrying model load with CPU backend.");
+        runtime_.gpu_enabled = false;
+        runtime_.inference_mode = "CPU";
+        runtime_.fallback_reason = "model load failed with Vulkan backend";
+        opt_.use_vulkan_compute = false;
+        det_net_.clear();
+        rec_net_.clear();
+        det_net_.opt = opt_;
+        rec_net_.opt = opt_;
+
+        if (!try_load_models()) {
+            throw std::runtime_error("failed to load ncnn models after CPU fallback");
+        }
+    }
+
+    bool try_load_models() {
+        return det_net_.load_param((model_dir_ / "det.ncnn.param").string().c_str()) == 0 &&
+               det_net_.load_model((model_dir_ / "det.ncnn.bin").string().c_str()) == 0 &&
+               rec_net_.load_param((model_dir_ / "rec.ncnn.param").string().c_str()) == 0 &&
+               rec_net_.load_model((model_dir_ / "rec.ncnn.bin").string().c_str()) == 0;
     }
 
     std::filesystem::path model_dir_;
     RuntimeInfo runtime_;
+    int gpu_device_index_ = 0;
     std::vector<std::string> keys_;
     ncnn::Option opt_;
     ncnn::Net det_net_;

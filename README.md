@@ -15,8 +15,8 @@ Install or provide these dependencies:
 Example:
 
 ```powershell
-cmake -S . -B build -G Ninja -DCMAKE_PREFIX_PATH="C:\path\to\deps"
-cmake --build build --config Release
+cmake -S . -B build-msvc-ncnn -G "Visual Studio 17 2022" -A x64 -DCMAKE_PREFIX_PATH="C:\Users\Ashu\Desktop\PPOCRv6\third_party\ncnn-20260526-windows-vs2022\x64;C:\ProgramData\miniconda3\Library"
+cmake --build build-msvc-ncnn --config Release
 ```
 
 For dependency smoke tests without ncnn:
