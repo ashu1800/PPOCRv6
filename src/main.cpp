@@ -2,6 +2,7 @@
 #include "ppocr/http_server.h"
 #include "ppocr/logger.h"
 #include "ppocr/ocr_engine.h"
+#include "ppocr/usage.h"
 
 #include <cstdlib>
 #include <exception>
@@ -24,6 +25,7 @@ int main() {
         } else if (!runtime.fallback_reason.empty()) {
             ppocr::log::warn("CPU fallback reason: " + runtime.fallback_reason);
         }
+        ppocr::log::info(ppocr::startup_usage_text(config));
 
         ppocr::HttpServer server(config, engine);
         server.run();

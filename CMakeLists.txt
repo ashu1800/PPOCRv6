@@ -17,6 +17,7 @@ add_library(ppocr_core
     src/ocr_engine.cpp
     src/ocr_postprocess.cpp
     src/request_queue.cpp
+    src/usage.cpp
 )
 
 target_include_directories(ppocr_core

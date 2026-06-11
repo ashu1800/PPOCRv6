@@ -2,6 +2,7 @@
 #include "ppocr/config.h"
 #include "ppocr/ocr_postprocess.h"
 #include "ppocr/request_queue.h"
+#include "ppocr/usage.h"
 
 #include <cassert>
 #include <filesystem>
@@ -126,6 +127,24 @@ void test_boxes_sort_in_reading_order() {
     assert(items[2].text == "bottom");
 }
 
+void test_startup_usage_text_contains_api_contract() {
+    ppocr::Config config;
+    config.listen_host = "0.0.0.0";
+    config.port = 8080;
+    config.api_key = "secret";
+
+    const auto usage = ppocr::startup_usage_text(config);
+
+    assert(usage.find("GET /health") != std::string::npos);
+    assert(usage.find("POST /ocr") != std::string::npos);
+    assert(usage.find("X-API-Key: secret") != std::string::npos);
+    assert(usage.find("\"image_base64\"") != std::string::npos);
+    assert(usage.find("\"full_text\"") != std::string::npos);
+    assert(usage.find("\"items\"") != std::string::npos);
+    assert(usage.find("\"confidence\"") != std::string::npos);
+    assert(usage.find("\"box\"") != std::string::npos);
+}
+
 } // namespace
 
 int main() {
@@ -136,5 +155,6 @@ int main() {
     test_request_queue_rejects_when_full();
     test_ctc_decode_skips_blank_and_repeated_indices();
     test_boxes_sort_in_reading_order();
+    test_startup_usage_text_contains_api_contract();
     return 0;
 }
