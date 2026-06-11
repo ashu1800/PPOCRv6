@@ -15,6 +15,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #if defined(_WIN32)
@@ -67,7 +68,7 @@ struct WsaSession {
 };
 
 struct OcrJob {
-    std::vector<std::uint8_t> bytes;
+    std::string image_base64;
     std::promise<OcrResult> promise;
 };
 
@@ -241,9 +242,9 @@ void handle_client(socket_t client, const Config& config, const std::shared_ptr<
                 response = json_response(401, {{"error", "invalid API key"}});
             } else {
                 const auto json = nlohmann::json::parse(body);
-                const auto image_base64 = json.at("image_base64").get<std::string>();
+                auto image_base64 = json.at("image_base64").get<std::string>();
                 auto job = std::make_shared<OcrJob>();
-                job->bytes = decode_base64(image_base64);
+                job->image_base64 = std::move(image_base64);
                 auto future = job->promise.get_future();
                 if (!queue.try_push(job)) {
                     response = json_response(429, {{"error", "OCR queue is full"}});
@@ -338,7 +339,7 @@ void HttpServer::run() {
             while (queue.wait_pop(job)) {
                 const auto started = std::chrono::steady_clock::now();
                 try {
-                    auto result = engine_->recognize(job->bytes);
+                    auto result = engine_->recognize(decode_base64(job->image_base64));
                     const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
                                              std::chrono::steady_clock::now() - started)
                                              .count();

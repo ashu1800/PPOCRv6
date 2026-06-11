@@ -16,6 +16,8 @@ struct Config {
     std::size_t max_concurrent_requests = 2;
     std::size_t queue_size = 8;
     std::size_t max_request_body_bytes = 16 * 1024 * 1024;
+    std::size_t rec_max_width = 960;
+    bool enable_orientation_retry = true;
 
     static Config load_or_create(const std::filesystem::path& path);
     void validate() const;

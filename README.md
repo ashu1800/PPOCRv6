@@ -43,7 +43,9 @@ On first start the service creates `config.json`:
   "gpu_device": 0,
   "max_concurrent_requests": 2,
   "queue_size": 8,
-  "max_request_body_bytes": 16777216
+  "max_request_body_bytes": 16777216,
+  "rec_max_width": 960,
+  "enable_orientation_retry": true
 }
 ```
 
@@ -89,3 +91,5 @@ Response shape:
   ]
 }
 ```
+
+`items[].box` is ordered as top-left, top-right, bottom-right, bottom-left. Very long recognition crops are split and merged automatically; `rec_max_width` controls the segment width after the crop is too wide for direct recognition. When `enable_orientation_retry` is true, low-confidence horizontal crops are retried after a 180 degree rotation and the higher-confidence result is returned.

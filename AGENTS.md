@@ -8,15 +8,18 @@ PPOCRv6 是一个 C++ 无 UI OCR 服务项目，目标产物为单个 `PPOCRv6.e
 
 - `CMakeLists.txt`：C++17 构建入口，配置 ncnn、OpenCV、nlohmann/json 和测试目标。
 - `include/ppocr`：公共头文件，包含配置、日志、HTTP 服务、OCR engine、base64 和队列接口。
-- `src/config.cpp`：首次启动生成 `config.json`，并校验模型级别、端口、API Key 和并发参数。
-- `src/http_server.cpp`：HTTP 服务实现，提供 `GET /health` 和 `POST /ocr`，使用 API Key 鉴权与有界队列控制并发。
-- `src/ocr_engine.cpp`：OCR runtime 初始化、模型文件校验、ncnn GPU 优先和 CPU fallback 逻辑。
-- `src/ocr_postprocess.cpp`：CTC 解码和文本框阅读顺序排序等 OCR 后处理工具。
+- `src/config.cpp`：首次启动生成 `config.json`，并校验模型级别、端口、API Key、并发、识别宽度和方向重试参数。
+- `src/http_server.cpp`：HTTP 服务实现，提供 `GET /health` 和 `POST /ocr`，使用 API Key 鉴权与有界队列控制并发，并在 OCR worker 内解码 base64。
+- `src/ocr_engine.cpp`：OCR runtime 初始化、模型文件校验、ncnn GPU 优先和 CPU fallback、四点透视裁剪、长文本切分和低置信度 180 度重试逻辑。
+- `src/ocr_postprocess.cpp`：CTC 解码、文本框四点排序、动态阅读顺序排序和 UTF-8 安全文本段合并等 OCR 后处理工具。
 - `tests/test_main.cpp`：基础单元测试，覆盖配置、base64、队列和后处理。
 - `models`：外置 PPOCR ncnn 模型目录，每个级别包含 `det.ncnn.param/bin`、`rec.ncnn.param/bin`、`keys.txt`。
 
 ## 变更历史
 
+[2026-06-11] OCR识别 - 优化四点透视裁剪、动态 padding、长文本分段、低置信度 180 度重试和动态阅读顺序排序。
+[2026-06-11] HTTP服务 - 将 OCR base64 解码移动到 worker 内，队列满时避免无效大图解码。
+[2026-06-11] 配置 - 新增 `rec_max_width` 和 `enable_orientation_retry`，并记录 `items[].box` 稳定点序。
 [2026-06-11] HTTP服务 - 加固请求体大小限制、socket 超时、完整响应发送、线程生命周期和端口绑定失败处理。
 [2026-06-11] 日志 - 每次 OCR 请求完成或失败时输出识别耗时。
 [2026-06-11] OCR识别 - 修复 GPU FP16 导致的空识别结果，并为宽截图增加行级文本分割 fallback。

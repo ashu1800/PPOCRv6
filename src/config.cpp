@@ -34,6 +34,8 @@ nlohmann::json to_json(const Config& config) {
         {"max_concurrent_requests", config.max_concurrent_requests},
         {"queue_size", config.queue_size},
         {"max_request_body_bytes", config.max_request_body_bytes},
+        {"rec_max_width", config.rec_max_width},
+        {"enable_orientation_retry", config.enable_orientation_retry},
     };
 }
 
@@ -48,6 +50,8 @@ Config from_json(const nlohmann::json& json) {
     config.max_concurrent_requests = json.value("max_concurrent_requests", config.max_concurrent_requests);
     config.queue_size = json.value("queue_size", config.queue_size);
     config.max_request_body_bytes = json.value("max_request_body_bytes", config.max_request_body_bytes);
+    config.rec_max_width = json.value("rec_max_width", config.rec_max_width);
+    config.enable_orientation_retry = json.value("enable_orientation_retry", config.enable_orientation_retry);
     if (config.api_key.empty()) {
         config.api_key = generate_api_key();
     }
@@ -111,6 +115,9 @@ void Config::validate() const {
     }
     if (max_request_body_bytes < 1024 * 1024) {
         throw std::invalid_argument("max_request_body_bytes must be at least 1048576");
+    }
+    if (rec_max_width < 320 || rec_max_width > 4096) {
+        throw std::invalid_argument("rec_max_width must be in range 320..4096");
     }
 }
 

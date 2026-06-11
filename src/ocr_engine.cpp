@@ -8,6 +8,7 @@
 #include <cmath>
 #include <fstream>
 #include <future>
+#include <limits>
 #include <sstream>
 #include <stdexcept>
 
@@ -75,10 +76,44 @@ cv::Mat decode_image_or_throw(const std::vector<std::uint8_t>& image_bytes) {
 #if PPOCR_WITH_NCNN && PPOCR_WITH_OPENCV
 
 struct DetectionObject {
-    cv::RotatedRect rect;
-    int orientation = 0;
+    std::array<Point, 4> box{};
     float confidence = 0.0F;
 };
+
+struct RecognizedText {
+    std::string text;
+    float confidence = 0.0F;
+};
+
+float point_distance(const Point& lhs, const Point& rhs) {
+    const float dx = lhs.x - rhs.x;
+    const float dy = lhs.y - rhs.y;
+    return std::sqrt(dx * dx + dy * dy);
+}
+
+cv::Point2f to_cv_point(const Point& point) {
+    return {point.x, point.y};
+}
+
+Point to_point(const cv::Point2f& point) {
+    return {point.x, point.y};
+}
+
+Point clamp_point_to_image(Point point, int width, int height) {
+    point.x = std::clamp(point.x, 0.0F, static_cast<float>(std::max(0, width - 1)));
+    point.y = std::clamp(point.y, 0.0F, static_cast<float>(std::max(0, height - 1)));
+    return point;
+}
+
+std::array<Point, 4> ordered_box_from_rotated_rect(const cv::RotatedRect& rect) {
+    cv::Point2f corners[4];
+    rect.points(corners);
+    std::array<Point, 4> box{};
+    for (int i = 0; i < 4; ++i) {
+        box[static_cast<std::size_t>(i)] = to_point(corners[i]);
+    }
+    return order_box_points(box);
+}
 
 double contour_score(const cv::Mat& probability, const std::vector<cv::Point>& contour) {
     cv::Rect rect = cv::boundingRect(contour);
@@ -102,45 +137,29 @@ double contour_score(const cv::Mat& probability, const std::vector<cv::Point>& c
 }
 
 cv::Mat crop_text_region(const cv::Mat& image, const DetectionObject& object) {
-    const float rw = object.rect.size.width;
-    const float rh = object.rect.size.height;
+    const auto crop_box = expand_text_box(object.box, static_cast<float>(image.cols), static_cast<float>(image.rows));
+    const float width = std::max(point_distance(crop_box[0], crop_box[1]), point_distance(crop_box[3], crop_box[2]));
+    const float height = std::max(point_distance(crop_box[0], crop_box[3]), point_distance(crop_box[1], crop_box[2]));
     const int target_height = 48;
-    const int target_width = std::max(8, static_cast<int>(std::round(rh * target_height / std::max(rw, 1.0F))));
+    const int target_width = std::max(8, static_cast<int>(std::round(width * target_height / std::max(height, 1.0F))));
 
-    cv::Point2f corners[4];
-    object.rect.points(corners);
-
-    std::vector<cv::Point2f> src_pts(3);
-    if (object.orientation == 0) {
-        src_pts[0] = corners[0];
-        src_pts[1] = corners[1];
-        src_pts[2] = corners[3];
-    } else {
-        src_pts[0] = corners[2];
-        src_pts[1] = corners[3];
-        src_pts[2] = corners[1];
-    }
-
+    std::vector<cv::Point2f> src_pts{
+        to_cv_point(crop_box[0]),
+        to_cv_point(crop_box[1]),
+        to_cv_point(crop_box[2]),
+        to_cv_point(crop_box[3]),
+    };
     std::vector<cv::Point2f> dst_pts{
         cv::Point2f(0.0F, 0.0F),
-        cv::Point2f(static_cast<float>(target_width), 0.0F),
-        cv::Point2f(0.0F, static_cast<float>(target_height)),
+        cv::Point2f(static_cast<float>(target_width - 1), 0.0F),
+        cv::Point2f(static_cast<float>(target_width - 1), static_cast<float>(target_height - 1)),
+        cv::Point2f(0.0F, static_cast<float>(target_height - 1)),
     };
 
-    cv::Mat transform = cv::getAffineTransform(src_pts, dst_pts);
+    cv::Mat transform = cv::getPerspectiveTransform(src_pts, dst_pts);
     cv::Mat crop;
-    cv::warpAffine(image, crop, transform, cv::Size(target_width, target_height), cv::INTER_LINEAR, cv::BORDER_REPLICATE);
+    cv::warpPerspective(image, crop, transform, cv::Size(target_width, target_height), cv::INTER_LINEAR, cv::BORDER_REPLICATE);
     return crop;
-}
-
-std::array<Point, 4> rotated_rect_to_box(const cv::RotatedRect& rect) {
-    cv::Point2f corners[4];
-    rect.points(corners);
-    std::array<Point, 4> box{};
-    for (int i = 0; i < 4; ++i) {
-        box[static_cast<std::size_t>(i)] = {corners[i].x, corners[i].y};
-    }
-    return box;
 }
 
 std::vector<DetectionObject> split_wide_text_lines(const cv::Mat& image) {
@@ -170,11 +189,13 @@ std::vector<DetectionObject> split_wide_text_lines(const cv::Mat& image) {
         rect.width = std::min(image.cols - rect.x, rect.width + 8);
         rect.height = std::min(image.rows - rect.y, rect.height + 8);
 
-        cv::RotatedRect rrect(
-            cv::Point2f(rect.x + rect.width / 2.0F, rect.y + rect.height / 2.0F),
-            cv::Size2f(static_cast<float>(rect.height), static_cast<float>(rect.width)),
-            90.0F);
-        objects.push_back({rrect, 0, 0.35F});
+        std::array<Point, 4> box{
+            Point{static_cast<float>(rect.x), static_cast<float>(rect.y)},
+            Point{static_cast<float>(rect.x + rect.width), static_cast<float>(rect.y)},
+            Point{static_cast<float>(rect.x + rect.width), static_cast<float>(rect.y + rect.height)},
+            Point{static_cast<float>(rect.x), static_cast<float>(rect.y + rect.height)},
+        };
+        objects.push_back({order_box_points(box), 0.35F});
     }
     return objects;
 }
@@ -223,7 +244,11 @@ private:
 class NcnnOcrEngine final : public OcrEngine {
 public:
     NcnnOcrEngine(const Config& config, const std::filesystem::path& runtime_dir)
-        : model_dir_(model_dir_for(runtime_dir, config.model_level)), gpu_device_index_(config.gpu_device), keys_(load_keys(model_dir_ / "keys.txt")) {
+        : model_dir_(model_dir_for(runtime_dir, config.model_level)),
+          gpu_device_index_(config.gpu_device),
+          rec_max_width_(config.rec_max_width),
+          enable_orientation_retry_(config.enable_orientation_retry),
+          keys_(load_keys(model_dir_ / "keys.txt")) {
         require_file(model_dir_ / "det.ncnn.param");
         require_file(model_dir_ / "det.ncnn.bin");
         require_file(model_dir_ / "rec.ncnn.param");
@@ -385,10 +410,15 @@ private:
             rect.size.width /= scale;
             rect.size.height /= scale;
 
-            objects.push_back({rect, orientation, static_cast<float>(score)});
+            auto box = ordered_box_from_rotated_rect(rect);
+            for (auto& point : box) {
+                point = clamp_point_to_image(point, image.cols, image.rows);
+            }
+            objects.push_back({box, static_cast<float>(score)});
         }
 
-        if (objects.size() == 1 && image.cols > image.rows * 3 && objects[0].rect.size.height > image.cols * 0.8F) {
+        if (objects.size() == 1 && image.cols > image.rows * 3 &&
+            point_distance(objects[0].box[0], objects[0].box[1]) > image.cols * 0.8F) {
             auto line_objects = split_wide_text_lines(image);
             if (line_objects.size() > 1) {
                 log::info("Detect fallback: split wide screenshot into " + std::to_string(line_objects.size()) + " text lines");
@@ -401,6 +431,107 @@ private:
 
     OcrItem recognize_one(const cv::Mat& image, const DetectionObject& detection) {
         cv::Mat crop = crop_text_region(image, detection);
+        if (crop.empty()) {
+            return {};
+        }
+        RecognizedText decoded = recognize_text(crop);
+        if (enable_orientation_retry_ && decoded.confidence < 0.75F && crop.cols > crop.rows * 1.2F) {
+            cv::Mat rotated;
+            cv::rotate(crop, rotated, cv::ROTATE_180);
+            auto rotated_decoded = recognize_text(rotated);
+            if (rotated_decoded.confidence > decoded.confidence) {
+                decoded = std::move(rotated_decoded);
+            }
+        }
+
+        OcrItem item;
+        item.text = decoded.text;
+        item.confidence = decoded.confidence <= 0.0F ? detection.confidence : decoded.confidence;
+        item.box = detection.box;
+        return item;
+    }
+
+    std::vector<cv::Mat> split_recognition_crop(const cv::Mat& crop) const {
+        constexpr int direct_recognition_max_width = 4096;
+        if (crop.cols <= direct_recognition_max_width) {
+            return {crop};
+        }
+
+        cv::Mat gray;
+        cv::cvtColor(crop, gray, cv::COLOR_BGR2GRAY);
+        cv::Mat binary;
+        cv::threshold(gray, binary, 0, 255, cv::THRESH_BINARY_INV | cv::THRESH_OTSU);
+
+        std::vector<int> column_ink(static_cast<std::size_t>(binary.cols), 0);
+        for (int x = 0; x < binary.cols; ++x) {
+            column_ink[static_cast<std::size_t>(x)] = cv::countNonZero(binary.col(x));
+        }
+
+        std::vector<cv::Mat> segments;
+        constexpr int overlap = 32;
+        int start = 0;
+        while (crop.cols - start > static_cast<int>(rec_max_width_)) {
+            const int search_start = std::min(crop.cols - 1, start + static_cast<int>(rec_max_width_ * 3 / 4));
+            const int search_end = std::min(crop.cols - 1, start + static_cast<int>(rec_max_width_));
+            int cut = search_end;
+            int best_score = std::numeric_limits<int>::max();
+            for (int x = search_start; x <= search_end; ++x) {
+                int score = 0;
+                for (int offset = -2; offset <= 2; ++offset) {
+                    const int sample_x = std::clamp(x + offset, 0, binary.cols - 1);
+                    score += column_ink[static_cast<std::size_t>(sample_x)];
+                }
+                if (score < best_score) {
+                    best_score = score;
+                    cut = x;
+                }
+            }
+
+            if (cut - start < static_cast<int>(rec_max_width_ / 2)) {
+                cut = std::min(crop.cols, start + static_cast<int>(rec_max_width_));
+            }
+            segments.push_back(crop(cv::Rect(start, 0, cut - start, crop.rows)).clone());
+            start = std::max(cut - overlap, start + 1);
+        }
+        if (start < crop.cols) {
+            segments.push_back(crop(cv::Rect(start, 0, crop.cols - start, crop.rows)).clone());
+        }
+        for (auto& segment : segments) {
+            if (segment.cols != static_cast<int>(rec_max_width_)) {
+                cv::Mat resized;
+                cv::resize(segment, resized, cv::Size(static_cast<int>(rec_max_width_), segment.rows), 0.0, 0.0, cv::INTER_LINEAR);
+                segment = std::move(resized);
+            }
+        }
+        return segments;
+    }
+
+    RecognizedText recognize_text(const cv::Mat& crop) {
+        auto segments = split_recognition_crop(crop);
+        if (segments.size() == 1) {
+            return recognize_segment(segments[0]);
+        }
+
+        std::vector<std::string> texts;
+        texts.reserve(segments.size());
+        float confidence_sum = 0.0F;
+        int confidence_count = 0;
+        for (const auto& segment : segments) {
+            auto decoded = recognize_segment(segment);
+            if (!decoded.text.empty()) {
+                texts.push_back(std::move(decoded.text));
+                confidence_sum += decoded.confidence;
+                ++confidence_count;
+            }
+        }
+
+        return {
+            merge_text_segments(texts),
+            confidence_count == 0 ? 0.0F : confidence_sum / static_cast<float>(confidence_count),
+        };
+    }
+
+    RecognizedText recognize_segment(const cv::Mat& crop) {
         if (crop.empty()) {
             return {};
         }
@@ -437,11 +568,7 @@ private:
         }
 
         const auto decoded = ctc_decode(indices, probabilities, keys_);
-        OcrItem item;
-        item.text = decoded.text;
-        item.confidence = decoded.confidence <= 0.0F ? detection.confidence : decoded.confidence;
-        item.box = rotated_rect_to_box(detection.rect);
-        return item;
+        return {decoded.text, decoded.confidence};
     }
 #endif
 
@@ -528,6 +655,8 @@ private:
     std::filesystem::path model_dir_;
     RuntimeInfo runtime_;
     int gpu_device_index_ = 0;
+    std::size_t rec_max_width_ = 960;
+    bool enable_orientation_retry_ = true;
     std::vector<std::string> keys_;
     ncnn::Option opt_;
     ncnn::Net det_net_;

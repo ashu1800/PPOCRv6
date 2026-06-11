@@ -2,6 +2,7 @@
 
 #include "ppocr/ocr_engine.h"
 
+#include <array>
 #include <string>
 #include <vector>
 
@@ -13,6 +14,9 @@ struct CtcDecodeResult {
 };
 
 CtcDecodeResult ctc_decode(const std::vector<int>& indices, const std::vector<float>& probabilities, const std::vector<std::string>& keys);
+std::array<Point, 4> order_box_points(const std::array<Point, 4>& points);
+std::array<Point, 4> expand_text_box(const std::array<Point, 4>& ordered_box, float image_width, float image_height);
+std::string merge_text_segments(const std::vector<std::string>& segments);
 void sort_boxes_reading_order(std::vector<OcrItem>& items);
 
 } // namespace ppocr
