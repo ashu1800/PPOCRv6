@@ -143,6 +143,42 @@ std::array<Point, 4> rotated_rect_to_box(const cv::RotatedRect& rect) {
     return box;
 }
 
+std::vector<DetectionObject> split_wide_text_lines(const cv::Mat& image) {
+    cv::Mat gray;
+    cv::cvtColor(image, gray, cv::COLOR_BGR2GRAY);
+    cv::Mat binary;
+    cv::threshold(gray, binary, 0, 255, cv::THRESH_BINARY_INV | cv::THRESH_OTSU);
+
+    const int kernel_w = std::max(25, image.cols / 30);
+    const int kernel_h = std::max(3, image.rows / 80);
+    cv::Mat kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(kernel_w, kernel_h));
+    cv::Mat merged;
+    cv::dilate(binary, merged, kernel);
+
+    std::vector<std::vector<cv::Point>> contours;
+    std::vector<cv::Vec4i> hierarchy;
+    cv::findContours(merged, contours, hierarchy, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
+
+    std::vector<DetectionObject> objects;
+    for (const auto& contour : contours) {
+        cv::Rect rect = cv::boundingRect(contour);
+        if (rect.width < image.cols / 30 || rect.height < 6) {
+            continue;
+        }
+        rect.x = std::max(0, rect.x - 4);
+        rect.y = std::max(0, rect.y - 4);
+        rect.width = std::min(image.cols - rect.x, rect.width + 8);
+        rect.height = std::min(image.rows - rect.y, rect.height + 8);
+
+        cv::RotatedRect rrect(
+            cv::Point2f(rect.x + rect.width / 2.0F, rect.y + rect.height / 2.0F),
+            cv::Size2f(static_cast<float>(rect.height), static_cast<float>(rect.width)),
+            90.0F);
+        objects.push_back({rrect, 0, 0.35F});
+    }
+    return objects;
+}
+
 #endif
 
 class BasicOcrEngine final : public OcrEngine {
@@ -293,7 +329,6 @@ private:
         output.substract_mean_normalize(nullptr, denorm_vals);
         cv::Mat probability(output.h, output.w, CV_8UC1);
         output.to_pixels(probability.data, ncnn::Mat::PIXEL_GRAY);
-
         cv::Mat bitmap;
         constexpr float threshold = 0.3F;
         cv::threshold(probability, bitmap, threshold * 255.0F, 255.0, cv::THRESH_BINARY);
@@ -306,7 +341,7 @@ private:
         }
 
         std::vector<DetectionObject> objects;
-        constexpr float box_threshold = 0.6F;
+        constexpr float box_threshold = 0.35F;
         constexpr float enlarge_ratio = 1.95F;
         const float min_size = std::max(3.0F * scale, 3.0F);
 
@@ -353,6 +388,14 @@ private:
             objects.push_back({rect, orientation, static_cast<float>(score)});
         }
 
+        if (objects.size() == 1 && image.cols > image.rows * 3 && objects[0].rect.size.height > image.cols * 0.8F) {
+            auto line_objects = split_wide_text_lines(image);
+            if (line_objects.size() > 1) {
+                log::info("Detect fallback: split wide screenshot into " + std::to_string(line_objects.size()) + " text lines");
+                return line_objects;
+            }
+        }
+
         return objects;
     }
 
@@ -361,7 +404,6 @@ private:
         if (crop.empty()) {
             return {};
         }
-
         ncnn::Mat input = ncnn::Mat::from_pixels(crop.data, ncnn::Mat::PIXEL_BGR, crop.cols, crop.rows);
         const float mean_vals[3] = {127.5F, 127.5F, 127.5F};
         const float norm_vals[3] = {1.0F / 127.5F, 1.0F / 127.5F, 1.0F / 127.5F};
@@ -405,8 +447,8 @@ private:
 
     void initialize_runtime(const Config& config) {
         opt_.num_threads = static_cast<int>(std::max<std::size_t>(1, config.max_concurrent_requests));
-        opt_.use_fp16_packed = true;
-        opt_.use_fp16_storage = true;
+        opt_.use_fp16_packed = false;
+        opt_.use_fp16_storage = false;
         opt_.use_fp16_arithmetic = false;
 
 #if NCNN_VULKAN
@@ -421,7 +463,7 @@ private:
                     runtime_.fallback_reason = "configured gpu_device is out of range";
                 } else {
                     opt_.use_vulkan_compute = true;
-                    opt_.use_bf16_storage = true;
+                    opt_.use_bf16_storage = false;
                     runtime_.gpu_enabled = true;
                     runtime_.inference_mode = "GPU(Vulkan)";
                     runtime_.gpu_device_name = ncnn::get_gpu_info(config.gpu_device).device_name();

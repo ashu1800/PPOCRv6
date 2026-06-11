@@ -17,6 +17,7 @@ PPOCRv6 是一个 C++ 无 UI OCR 服务项目，目标产物为单个 `PPOCRv6.e
 
 ## 变更历史
 
+[2026-06-11] OCR识别 - 修复 GPU FP16 导致的空识别结果，并为宽截图增加行级文本分割 fallback。
 [2026-06-11] 日志 - 启动后输出 HTTP 接口调用方法、鉴权 Header、请求 JSON 和返回 JSON 格式。
 [2026-06-11] 依赖 - 安装并适配 ncnn 20260526 Windows VS2022 x64，本地支持真实 ncnn Vulkan 构建。
 [2026-06-11] OCR服务 - 新增 C++ ncnn HTTP OCR 服务骨架，支持配置生成、API Key、有界并发、GPU 优先与 CPU fallback 日志。
